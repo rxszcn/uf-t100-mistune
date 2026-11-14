@@ -269,6 +269,97 @@ class TestMarkdownRendererRoundTrip(TestCase):
         self.assertEqual(self.reformat("\nabc"), "\nabc\n")
         self.assertEqual(self.reformat("\n\n\n\nabc"), "\n\n\n\nabc\n")
 
+    def test_empty_block_quote_keeps_its_element_shape(self):
+        # An empty block quote (only blank-line children) rendered to the
+        # empty string, so the whole element -- and every nested empty quote
+        # inside it -- silently vanished on the round-trip. It must keep a
+        # bare marker line so the re-parsed tree still contains the quote.
+        from mistune.block_parser import BlockParser
+
+        parser = BlockParser()
+
+        def quote_shape(text):
+            state = BlockState()
+            state.process(text)
+            parser.parse(state)
+            return _block_quote_shape(state.tokens)
+
+        for depth, sources in (
+            (1, (">\n", "> \n", ">\n>\n")),
+            (2, (">>\n", "> >\n", ">>\n>>\n")),
+            (3, (">>>\n", "> > >\n")),
+        ):
+            expected = ["block_quote"] * depth
+            for source in sources:
+                with self.subTest(source=source):
+                    reformatted = self.reformat(source)
+                    # a quote at every nesting depth survives the round-trip
+                    self.assertEqual(quote_shape(reformatted), expected)
+                    # reformatting the output is idempotent
+                    self.assertEqual(self.reformat(reformatted), reformatted)
+                    # the rendered HTML keeps the same <blockquote> nesting
+                    self.assertEqual(self.to_html(reformatted), self.to_html(source))
+
+    def test_empty_block_quote_with_adjacent_content(self):
+        # Empty quotes must keep their element when content sits before,
+        # after, or alongside them, at nesting depth one and two.
+        for source in (
+            "para\n\n>\n",
+            ">\n\npara\n",
+            "para\n\n>\n\npara2\n",
+            ">\n# heading\n",
+            ">\n\n- item\n",
+            ">>\n\npara\n",
+            "para\n\n>>\n",
+            ">\n\n>\n",
+            ">\n\n>\n\n> real\n",
+        ):
+            with self.subTest(source=source):
+                reformatted = self.reformat(source)
+                self.assertEqual(self.to_html(reformatted), self.to_html(source))
+                self.assertEqual(self.reformat(reformatted), reformatted)
+                # the quote element is still present, not flattened to a blank line
+                self.assertIn(">", reformatted)
+                self.assertNotEqual(reformatted.strip(" \n").count(">"), 0)
+
+    def test_empty_block_quote_renders_bare_marker(self):
+        # the exact emitted form: one marker line per empty quote, with the
+        # nesting depth rebuilt by the surrounding quote's indentation
+        self.assertEqual(self.reformat(">\n"), ">\n")
+        self.assertEqual(self.reformat("> \n"), ">\n")
+        self.assertEqual(self.reformat(">>\n"), "> >\n")
+        self.assertEqual(self.reformat(">>>\n"), "> > >\n")
+        self.assertEqual(self.reformat("> > >\n"), "> > >\n")
+        # two sibling empty quotes stay two separate elements
+        self.assertEqual(self.reformat(">\n\n>\n"), ">\n\n>\n")
+
+    def test_nonempty_block_quote_output_is_unchanged(self):
+        # the empty-quote branch must not alter the existing rendering of
+        # quotes that carry real content, including inner blank lines
+        for source, expected in (
+            ("> quote\n", "> quote\n"),
+            ("> quote\n>\n> continuation\n", "> quote\n> \n> continuation\n"),
+            ("> #\n", "> # \n"),
+            ("> <https://example.com>\n", "> <https://example.com>\n"),
+            ("> text\n>\n", "> text\n"),
+            ("> > nested\n", "> > nested\n"),
+        ):
+            with self.subTest(source=source):
+                self.assertEqual(self.reformat(source), expected)
+                self.assert_round_trip(source)
+
+
+def _block_quote_shape(tokens):
+    """Return the chain of nested block_quote types, ignoring siblings and
+    blank lines, so the surviving nesting depth can be compared directly."""
+    shape = []
+    while True:
+        quote = next((token for token in tokens if token.get("type") == "block_quote"), None)
+        if quote is None:
+            return shape
+        shape.append("block_quote")
+        tokens = quote.get("children", [])
+
 
 class TestRendererListLineEndings(TestCase):
     non_line_breaks = ("\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029")

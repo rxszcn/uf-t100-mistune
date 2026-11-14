@@ -176,6 +176,15 @@ class MarkdownRenderer(BaseRenderer):
         return marker2 + info + "\n" + code + marker2 + "\n\n"
 
     def block_quote(self, token: Dict[str, Any], state: BlockState) -> str:
+        # An empty block quote (its children are blank lines only) renders to
+        # an empty string, so indenting nothing would drop the element
+        # altogether: on the round-trip the whole quote -- including every
+        # nested empty quote and the document structure around it -- silently
+        # disappears. Emit a bare marker line to keep the element's shape; a
+        # surrounding quote re-indents it, rebuilding the nesting depth.
+        children = token.get("children", ())
+        if children and all(child.get("type") == "blank_line" for child in children):
+            return ">\n\n"
         # strip the children's trailing blank lines first so the quote marker is
         # not added to a dangling empty line; stripping it back off afterwards
         # would also eat a ">" that ends the content (an autolink or HTML tag).
